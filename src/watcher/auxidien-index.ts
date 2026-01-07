@@ -38,8 +38,13 @@ const CONFIG = {
   oracleAddress: process.env.AUXIDIEN_ORACLE_ADDRESS || "",
   rpcUrl: process.env.RPC_URL || "https://bsc-dataseed1.binance.org/",
   privateKey: process.env.PRIVATE_KEY || "",
-  updateInterval: parseInt(process.env.WATCHER_INTERVAL || "300000"), // 5 minutes
+  updateInterval: parseInt(process.env.WATCHER_INTERVAL || "300000"), // 5 minutes for data collection
   goldApiKey: process.env.GOLDAPI_KEY || "",
+  
+  // Discovery Phase: Publish only at specific hours (UTC)
+  // This prevents "algo peg" perception
+  publishHours: [0, 12], // UTC 00:00 and 12:00 (2 times per day)
+  discoveryPhase: true,  // Set to false after discovery phase
 };
 
 // Conversion constants
@@ -507,6 +512,35 @@ async function updateOracle(
 // MAIN LOOP
 // ═══════════════════════════════════════════════════════════════
 
+// Track last publish hour to avoid duplicate publishes
+let lastPublishHour: number = -1;
+
+/**
+ * Check if we should publish to oracle right now
+ * Discovery Phase: Only publish at specific hours (UTC)
+ */
+function shouldPublishNow(): boolean {
+  if (!CONFIG.discoveryPhase) {
+    return true; // Always publish if not in discovery phase
+  }
+
+  const now = new Date();
+  const currentHour = now.getUTCHours();
+  const currentMinute = now.getUTCMinutes();
+
+  // Only publish at the start of designated hours (within first 10 minutes)
+  const isPublishHour = CONFIG.publishHours.includes(currentHour);
+  const isFirstWindow = currentMinute < 10;
+  const notYetPublishedThisHour = lastPublishHour !== currentHour;
+
+  if (isPublishHour && isFirstWindow && notYetPublishedThisHour) {
+    lastPublishHour = currentHour;
+    return true;
+  }
+
+  return false;
+}
+
 async function runTick(oracle: ethers.Contract): Promise<void> {
   console.log("\n" + "═".repeat(60));
   console.log(`⏰ TICK at ${new Date().toISOString()}`);
@@ -514,15 +548,32 @@ async function runTick(oracle: ethers.Contract): Promise<void> {
 
   try {
     const { metals, indexPrice, regime } = await fetchAndProcessSignals();
-    await updateOracle(oracle, indexPrice, metals, regime);
-
-    // Read back oracle state
-    const currentPrice = await oracle.getPricePerOzE6();
-    const lastUpdate = await oracle.lastUpdateAt();
     
-    console.log("\n📖 ORACLE STATE");
-    console.log(`   On-chain Price: $${(Number(currentPrice) / 1e6).toFixed(4)}/gram`);
-    console.log(`   Last Update: ${new Date(Number(lastUpdate) * 1000).toISOString()}`);
+    // Check if we should publish
+    const shouldPublish = shouldPublishNow();
+    
+    if (shouldPublish) {
+      console.log("\n🚀 PUBLISH WINDOW - Updating Oracle...");
+      await updateOracle(oracle, indexPrice, metals, regime);
+
+      // Read back oracle state
+      const currentPrice = await oracle.getPricePerOzE6();
+      const lastUpdate = await oracle.lastUpdateAt();
+      
+      console.log("\n📖 ORACLE STATE");
+      console.log(`   On-chain Price: $${(Number(currentPrice) / 1e6).toFixed(4)}/gram`);
+      console.log(`   Last Update: ${new Date(Number(lastUpdate) * 1000).toISOString()}`);
+    } else {
+      console.log("\n⏸️  DISCOVERY PHASE - Data collected, NOT publishing");
+      console.log(`   Publish hours (UTC): ${CONFIG.publishHours.join(", ")}:00`);
+      console.log(`   Calculated index: $${indexPrice.toFixed(4)}/gram (internal only)`);
+      
+      // Still show oracle state for monitoring
+      try {
+        const currentPrice = await oracle.getPricePerOzE6();
+        console.log(`   Current on-chain: $${(Number(currentPrice) / 1e6).toFixed(4)}/gram`);
+      } catch {}
+    }
 
   } catch (error: any) {
     console.error(`\n❌ TICK FAILED: ${error.message}`);
@@ -551,9 +602,16 @@ async function startPreprocessor(): Promise<void> {
   console.log("⚙️  CONFIGURATION");
   console.log(`   Oracle: ${CONFIG.oracleAddress}`);
   console.log(`   RPC: ${CONFIG.rpcUrl}`);
-  console.log(`   Update Interval: ${CONFIG.updateInterval / 1000}s`);
+  console.log(`   Data Collection Interval: ${CONFIG.updateInterval / 1000}s`);
   console.log(`   Smoothing Factor (λ): ${LAMBDA}`);
   console.log(`   Min Data Points: ${MIN_POINTS_FOR_VOLATILITY}`);
+  
+  if (CONFIG.discoveryPhase) {
+    console.log("\n🔔 DISCOVERY PHASE MODE");
+    console.log(`   ⚠️  Oracle publishes ONLY at UTC hours: ${CONFIG.publishHours.join(", ")}`);
+    console.log(`   📊 Data collected every ${CONFIG.updateInterval / 1000}s for volatility analysis`);
+    console.log(`   📌 This prevents "algo peg" perception during market observation`);
+  }
 
   console.log("\n📊 WEIGHT BOUNDS");
   for (const [metal, bounds] of Object.entries(WEIGHT_BOUNDS)) {
