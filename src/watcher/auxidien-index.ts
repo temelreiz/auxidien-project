@@ -43,8 +43,8 @@ const CONFIG = {
   
   // Discovery Phase: Publish only at specific hours (UTC)
   // This prevents "algo peg" perception
-  publishHours: [0, 12], // UTC 00:00 and 12:00 (2 times per day)
-  discoveryPhase: false,  // Set to false after discovery phase
+  publishHours: [0, 5, 10, 15, 20], // UTC - 5 times per day (every ~5 hours)
+  discoveryPhase: true,  // Set to false after discovery phase
 };
 
 // Conversion constants
