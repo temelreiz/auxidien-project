@@ -44,7 +44,7 @@ const CONFIG = {
   // Discovery Phase: Publish only at specific hours (UTC)
   // This prevents "algo peg" perception
   publishHours: [0, 12], // UTC 00:00 and 12:00 (2 times per day)
-  discoveryPhase: true,  // Set to false after discovery phase
+  discoveryPhase: false,  // Set to false after discovery phase
 };
 
 // Conversion constants
@@ -691,13 +691,13 @@ async function fetchAndProcessSignals(): Promise<{
   console.log("\n📡 SIGNAL PROCESSING");
   console.log("   Fetching raw signals from goldapi.io...");
 
-  // Fetch prices
+  // Fetch prices with longer delays to avoid rate limiting
   const goldPriceOz = await fetchMetalPrice("XAU");
-  await sleep(1500);
+  await sleep(2000);
   const silverPriceOz = await fetchMetalPrice("XAG");
-  await sleep(1500);
+  await sleep(2000);
   const platinumPriceOz = await fetchMetalPrice("XPT");
-  await sleep(1500);
+  await sleep(2000);
   const palladiumPriceOz = await fetchMetalPrice("XPD");
 
   // Convert to grams
