@@ -81,7 +81,7 @@ async function fetchMetalPrice(metal: string): Promise<number> {
     throw new Error(`GoldAPI error for ${metal}: ${response.status} - ${errorText}`);
   }
 
-  const data: GoldApiResponse = await response.json();
+  const data = (await response.json()) as GoldApiResponse;
   return data.price;
 }
 
