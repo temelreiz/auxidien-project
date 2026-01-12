@@ -28,9 +28,10 @@ interface GoldApiResponse {
 }
 
 interface OracleContract extends ethers.BaseContract {
-  updateIndexPrice: (price: bigint) => Promise<any>;
-  getIndexPrice: () => Promise<bigint>;
+  setPricePerOzE6: (newPricePerOzE6: bigint) => Promise<any>;
+  getPricePerOzE6: () => Promise<bigint>;
 }
+
 
 type Weights = Record<MetalSymbol, number>;
 
