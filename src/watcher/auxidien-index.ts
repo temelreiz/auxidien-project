@@ -693,11 +693,11 @@ async function fetchAndProcessSignals(): Promise<{
 
   // Fetch prices with longer delays to avoid rate limiting
   const goldPriceOz = await fetchMetalPrice("XAU");
-  await sleep(2000);
+  await sleep(3000);
   const silverPriceOz = await fetchMetalPrice("XAG");
-  await sleep(2000);
+  await sleep(3000);
   const platinumPriceOz = await fetchMetalPrice("XPT");
-  await sleep(2000);
+  await sleep(3000);
   const palladiumPriceOz = await fetchMetalPrice("XPD");
 
   // Convert to grams
