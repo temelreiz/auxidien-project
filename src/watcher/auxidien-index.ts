@@ -304,16 +304,18 @@ function deriveNewWeights(_prices: RawSignals, prev: Weights): Weights {
   return { ...prev };
 }
 
-async function publishToOracle(oracle: OracleContract, indexPriceUsdPerG: number) {
-  // Convert to 18 decimals (example)
-  const scaled = ethers.parseUnits(indexPriceUsdPerG.toFixed(8), 18);
-  console.log(`🧾 Publishing index price: ${indexPriceUsdPerG} USD/g -> ${scaled.toString()}`);
+async function publishToOracle(oracle: any, indexUsdPerG: number) {
+  const indexUsdPerOz = indexUsdPerG * OUNCE_TO_GRAM;
+  const pricePerOzE6 = BigInt(Math.round(indexUsdPerOz * 1_000_000));
 
-  const tx = await oracle.updateIndexPrice(scaled);
-  console.log(`⛓️  Sent tx: ${tx.hash}`);
-  const receipt = await tx.wait();
-  console.log(`✅ Published. Block: ${receipt.blockNumber}`);
+  console.log(
+    `🧾 Publishing index price: ${indexUsdPerG} USD/g -> ${indexUsdPerOz} USD/oz`
+  );
+
+  const tx = await oracle.setPricePerOzE6(pricePerOzE6);
+  await tx.wait();
 }
+
 
 async function runTick(oracle: OracleContract) {
   try {
@@ -353,9 +355,9 @@ async function startPreprocessor() {
   const wallet = new ethers.Wallet(CONFIG.privateKey, provider);
 
   const oracleAbi = [
-    "function updateIndexPrice(uint256 price) external",
-    "function getIndexPrice() external view returns (uint256)",
-  ];
+  "function setPricePerOzE6(uint256 newPricePerOzE6) external",
+  "function getPricePerOzE6() external view returns (uint256)",
+];
 
   const oracle = new ethers.Contract(CONFIG.oracleAddress, oracleAbi, wallet) as unknown as OracleContract;
 
