@@ -1,5 +1,4 @@
 import { ethers } from "ethers";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -153,13 +152,13 @@ async function run() {
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   const oracle = new ethers.Contract(
-    ORACLE_ADDRESS,
-    [
-      "function setPricePerOzE6(uint256 newPricePerOzE6) external",
-      "function getPricePerOzE6() external view returns (uint256)",
-    ],
-    wallet
-  ) as OracleContract;
+  ORACLE_ADDRESS,
+  [
+    "function setPricePerOzE6(uint256 newPricePerOzE6) external",
+    "function getPricePerOzE6() external view returns (uint256)",
+  ],
+  wallet
+  ) as unknown as OracleContract;
 
   console.log("✅ Watcher initialized successfully!");
   console.log("   Starting price update loop...");
