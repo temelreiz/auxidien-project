@@ -1,405 +1,187 @@
 import { ethers } from "ethers";
-import * as dotenv from "dotenv";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
 
 dotenv.config();
 
-// ═══════════════════════════════════════════════════════════════
-// TYPES
-// ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════
+   ENV CHECK
+═══════════════════════════════════════════════ */
+const REQUIRED_ENVS = ["RPC_URL", "ORACLE_ADDRESS", "PRIVATE_KEY", "GOLDAPI_KEY"];
+for (const k of REQUIRED_ENVS) {
+  if (!process.env[k]) {
+    console.error(`❌ Missing env var: ${k}`);
+    process.exit(1);
+  }
+}
 
+/* ═══════════════════════════════════════════════
+   CONSTANTS
+═══════════════════════════════════════════════ */
+const RPC_URL = process.env.RPC_URL!;
+const ORACLE_ADDRESS = process.env.ORACLE_ADDRESS!;
+const PRIVATE_KEY = process.env.PRIVATE_KEY!;
+const GOLDAPI_KEY = process.env.GOLDAPI_KEY!;
+
+const WATCHER_INTERVAL = parseInt(process.env.WATCHER_INTERVAL || "300000", 10); // 5 min
+const GOLDAPI_MIN_SPACING_MS = parseInt(process.env.GOLDAPI_MIN_SPACING_MS || "1000", 10);
+const GOLDAPI_CACHE_TTL_MS = parseInt(process.env.GOLDAPI_CACHE_TTL_MS || "30000", 10);
+const ORACLE_MAX_STEP_BPS = parseInt(process.env.ORACLE_MAX_STEP_BPS || "300", 10); // %3
+
+const OUNCE_TO_GRAM = 31.1035;
+
+/* ═══════════════════════════════════════════════
+   TYPES
+═══════════════════════════════════════════════ */
 type MetalSymbol = "XAU" | "XAG" | "XPT" | "XPD";
 
-interface GoldApiResponse {
-  timestamp: number | string;
-  metal?: string;
-  currency?: string;
-  exchange?: string;
-  symbol: string;
-  prev_close_price?: number;
-  open_price?: number;
-  low_price?: number;
-  high_price?: number;
-  open_time?: number;
-  price: number;
-  ch?: number;
-  chp?: number;
-  ask?: number;
-  bid?: number;
+interface RawSignals {
+  XAU: { priceUsdPerG: number };
+  XAG: { priceUsdPerG: number };
+  XPT: { priceUsdPerG: number };
+  XPD: { priceUsdPerG: number };
 }
+
+type Weights = Record<MetalSymbol, number>;
 
 interface OracleContract extends ethers.BaseContract {
   setPricePerOzE6: (newPricePerOzE6: bigint) => Promise<any>;
   getPricePerOzE6: () => Promise<bigint>;
 }
 
-
-type Weights = Record<MetalSymbol, number>;
-
-type RawSignals = Record<
-  MetalSymbol,
-  {
-    priceUsdPerOz: number;
-    priceUsdPerG: number;
-  }
->;
-
-// ═══════════════════════════════════════════════════════════════
-// CONFIG
-// ═══════════════════════════════════════════════════════════════
-
-const CONFIG = {
-  rpcUrl: process.env.RPC_URL || "",
-  oracleAddress: process.env.ORACLE_ADDRESS || "",
-  privateKey: process.env.PRIVATE_KEY || "",
-  updateInterval: parseInt(process.env.WATCHER_INTERVAL || "300000"), // default 5 minutes
-  goldApiKey: process.env.GOLDAPI_KEY || "",
-
-  // Optional discovery phase publishing windows (UTC)
-  publishHours: [0, 5, 10, 15, 20],
-  discoveryPhase: false,
-};
-
-// Conversion constants
-const OUNCE_TO_GRAM = 31.1035;
-
-// ═══════════════════════════════════════════════════════════════
-// WEIGHT BOUNDS (α + β + γ + δ = 1)
-// ═══════════════════════════════════════════════════════════════
-
-const WEIGHT_BOUNDS: Record<MetalSymbol, { min: number; max: number }> = {
-  XAU: { min: 0.45, max: 0.65 }, // Gold: 45-65%
-  XAG: { min: 0.15, max: 0.30 }, // Silver: 15-30%
-  XPT: { min: 0.10, max: 0.25 }, // Platinum: 10-25%
-  XPD: { min: 0.05, max: 0.15 }, // Palladium: 5-15%
-};
-
-// Smooth transition factor (λ)
-const LAMBDA = 0.08;
-
-// ═══════════════════════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════════════════════
-
-let currentWeights: Weights = {
+/* ═══════════════════════════════════════════════
+   WEIGHTS
+═══════════════════════════════════════════════ */
+const CURRENT_WEIGHTS: Weights = {
   XAU: 0.55,
   XAG: 0.20,
   XPT: 0.17,
   XPD: 0.08,
 };
 
-// ═══════════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════
+   GOLDAPI FETCH (RATE-LIMIT SAFE)
+═══════════════════════════════════════════════ */
+let lastFetchAt = 0;
+let cachedData: RawSignals | null = null;
 
-function nowISO() {
-  return new Date().toISOString();
-}
-
-function clamp(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, v));
-}
-
-function normalizeWeights(w: Weights): Weights {
-  const sum = Object.values(w).reduce((a, b) => a + b, 0);
-  return {
-    XAU: w.XAU / sum,
-    XAG: w.XAG / sum,
-    XPT: w.XPT / sum,
-    XPD: w.XPD / sum,
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// PRICE FETCHING (RATE LIMITED + CACHED + 429 BACKOFF)
-// ═══════════════════════════════════════════════════════════════
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function jitter(minMs: number, maxMs: number): number {
-  return Math.floor(minMs + Math.random() * (maxMs - minMs));
-}
-
-/**
- * In-memory cache + rate limiting for GoldAPI.
- * GoldAPI enforces ~5 requests / second per API key.
- * - We serialize requests with a minimum spacing
- * - We cache responses briefly to avoid refetching within the same tick/window
- */
-type CachedPrice = { ts: number; value: number };
-const PRICE_CACHE = new Map<string, CachedPrice>();
-
-// Default 3s cache (you can raise to 30-60s safely if needed)
-const PRICE_CACHE_TTL_MS = parseInt(process.env.GOLDAPI_CACHE_TTL_MS || "3000");
-
-// Ensure we never exceed ~4 req/s (safe under 5 req/s), even if something spikes.
-const GOLDAPI_MIN_SPACING_MS = parseInt(process.env.GOLDAPI_MIN_SPACING_MS || "300");
-
-// Promise chain used as a simple mutex/queue for GoldAPI calls
-let goldApiQueue: Promise<void> = Promise.resolve();
-let lastGoldApiCallAt = 0;
-
-async function scheduleGoldApiCall<T>(fn: () => Promise<T>): Promise<T> {
-  let resolvePrev!: () => void;
-  const prev = goldApiQueue;
-  goldApiQueue = new Promise<void>((r) => (resolvePrev = r));
-
-  await prev;
-  try {
-    const now = Date.now();
-    const since = now - lastGoldApiCallAt;
-    const wait = Math.max(0, GOLDAPI_MIN_SPACING_MS - since) + jitter(0, 120);
-    if (wait > 0) await sleep(wait);
-    const result = await fn();
-    lastGoldApiCallAt = Date.now();
-    return result;
-  } finally {
-    resolvePrev();
-  }
-}
-
-async function fetchMetalPrice(metal: MetalSymbol, retries = 3): Promise<number> {
-  // Cache first (helps when ticks fire close together or code calls twice)
-  const cached = PRICE_CACHE.get(metal);
-  if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL_MS) {
-    return cached.value;
-  }
-
-  const url = `https://www.goldapi.io/api/${metal}/USD`;
-
-  // Serialize + rate-limit all GoldAPI calls through the queue
-  const price = await scheduleGoldApiCall(async () => {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const response = await fetch(url, {
-          method: "GET",
-          headers: {
-            "x-access-token": CONFIG.goldApiKey,
-            "Content-Type": "application/json",
-          },
-        });
-
-        if (response.status === 429) {
-          const retryAfterHeader = response.headers.get("retry-after");
-          const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
-
-          const waitTime =
-            (Number.isFinite(retryAfterSec) ? retryAfterSec * 1000 : attempt * 4000) +
-            jitter(0, 500);
-
-          const errorText = await response.text().catch(() => "");
-          console.log(
-            `   ⚠️ GoldAPI 429 on ${metal}. Waiting ${(waitTime / 1000).toFixed(
-              1
-            )}s (attempt ${attempt}/${retries}). ${errorText ? "Body: " + errorText : ""}`
-          );
-
-          await sleep(waitTime);
-          continue;
-        }
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`GoldAPI error for ${metal}: ${response.status} - ${errorText}`);
-        }
-
-        const data = (await response.json()) as GoldApiResponse;
-        if (typeof data?.price !== "number") {
-          throw new Error(`GoldAPI unexpected payload for ${metal}: ${JSON.stringify(data)}`);
-        }
-
-        return data.price;
-      } catch (error: any) {
-        if (attempt === retries) throw error;
-
-        console.log(
-          `   ⚠️ Attempt ${attempt} failed for ${metal}, retrying... (${String(
-            error?.message || error
-          )})`
-        );
-
-        await sleep(1500 + attempt * 1000 + jitter(0, 400));
-      }
-    }
-
-    throw new Error(`Failed to fetch ${metal} after ${retries} attempts`);
+async function fetchMetal(symbol: MetalSymbol): Promise<number> {
+  const res = await fetch(`https://www.goldapi.io/api/${symbol}/USD`, {
+    headers: {
+      "x-access-token": GOLDAPI_KEY,
+      "Content-Type": "application/json",
+    },
   });
 
-  PRICE_CACHE.set(metal, { ts: Date.now(), value: price });
-  return price;
-}
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`GoldAPI ${symbol} ${res.status}: ${txt}`);
+  }
 
-// ═══════════════════════════════════════════════════════════════
-// SIGNAL PROCESSING (YOUR EXISTING LOGIC)
-// ═══════════════════════════════════════════════════════════════
-
-function shouldPublishNowUTC(): boolean {
-  if (!CONFIG.discoveryPhase) return true;
-  const hour = new Date().getUTCHours();
-  return CONFIG.publishHours.includes(hour);
+  const json: any = await res.json();
+  return json.price / OUNCE_TO_GRAM; // USD/g
 }
 
 async function fetchRawSignals(): Promise<RawSignals> {
-  console.log("══════════════════════════════════════════════════");
-  console.log(`⏰ Tick at ${nowISO()}`);
-  console.log("📡 Fetching raw signals from goldapi.io...");
+  const now = Date.now();
+  if (cachedData && now - lastFetchAt < GOLDAPI_CACHE_TTL_MS) return cachedData;
 
-  // IMPORTANT: Calls are queued & rate-limited inside fetchMetalPrice.
-  const goldPriceOz = await fetchMetalPrice("XAU");
-  const silverPriceOz = await fetchMetalPrice("XAG");
-  const platinumPriceOz = await fetchMetalPrice("XPT");
-  const palladiumPriceOz = await fetchMetalPrice("XPD");
+  const wait = Math.max(0, GOLDAPI_MIN_SPACING_MS - (now - lastFetchAt));
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
 
-  const prices: RawSignals = {
-    XAU: { priceUsdPerOz: goldPriceOz, priceUsdPerG: goldPriceOz / OUNCE_TO_GRAM },
-    XAG: { priceUsdPerOz: silverPriceOz, priceUsdPerG: silverPriceOz / OUNCE_TO_GRAM },
-    XPT: { priceUsdPerOz: platinumPriceOz, priceUsdPerG: platinumPriceOz / OUNCE_TO_GRAM },
-    XPD: { priceUsdPerOz: palladiumPriceOz, priceUsdPerG: palladiumPriceOz / OUNCE_TO_GRAM },
+  const data: RawSignals = {
+    XAU: { priceUsdPerG: await fetchMetal("XAU") },
+    XAG: { priceUsdPerG: await fetchMetal("XAG") },
+    XPT: { priceUsdPerG: await fetchMetal("XPT") },
+    XPD: { priceUsdPerG: await fetchMetal("XPD") },
   };
 
-  console.log("✅ Raw prices fetched (USD/oz):", {
-    XAU: goldPriceOz,
-    XAG: silverPriceOz,
-    XPT: platinumPriceOz,
-    XPD: palladiumPriceOz,
-  });
-
-  return prices;
+  cachedData = data;
+  lastFetchAt = Date.now();
+  return data;
 }
 
-// NOTE: Below functions are assumed to be your original logic.
-// If you already have these implemented in the file, keep them.
-// I’m leaving placeholders minimal but compatible with your structure.
-
+/* ═══════════════════════════════════════════════
+   INDEX CALCULATION (USD / gram)
+═══════════════════════════════════════════════ */
 function computeIndexPrice(prices: RawSignals, weights: Weights): number {
-  // Example: weighted sum in USD/gram (replace with your exact formula if different)
-  const x =
+  return (
     prices.XAU.priceUsdPerG * weights.XAU +
     prices.XAG.priceUsdPerG * weights.XAG +
     prices.XPT.priceUsdPerG * weights.XPT +
-    prices.XPD.priceUsdPerG * weights.XPD;
-  return x;
+    prices.XPD.priceUsdPerG * weights.XPD
+  );
 }
 
-function smoothWeights(prev: Weights, next: Weights): Weights {
-  const w: Weights = {
-    XAU: prev.XAU + LAMBDA * (next.XAU - prev.XAU),
-    XAG: prev.XAG + LAMBDA * (next.XAG - prev.XAG),
-    XPT: prev.XPT + LAMBDA * (next.XPT - prev.XPT),
-    XPD: prev.XPD + LAMBDA * (next.XPD - prev.XPD),
-  };
+/* ═══════════════════════════════════════════════
+   ORACLE STEP LOGIC
+═══════════════════════════════════════════════ */
+function stepLimitedE6(current: bigint, target: bigint, maxStepBps: number): bigint {
+  if (current === target) return target;
+  if (current === 0n) return target;
 
-  // Enforce bounds + normalize
-  w.XAU = clamp(w.XAU, WEIGHT_BOUNDS.XAU.min, WEIGHT_BOUNDS.XAU.max);
-  w.XAG = clamp(w.XAG, WEIGHT_BOUNDS.XAG.min, WEIGHT_BOUNDS.XAG.max);
-  w.XPT = clamp(w.XPT, WEIGHT_BOUNDS.XPT.min, WEIGHT_BOUNDS.XPT.max);
-  w.XPD = clamp(w.XPD, WEIGHT_BOUNDS.XPD.min, WEIGHT_BOUNDS.XPD.max);
+  const diff = target - current;
+  const absDiff = diff >= 0n ? diff : -diff;
 
-  return normalizeWeights(w);
+  let maxStep = (current * BigInt(maxStepBps)) / 10_000n;
+  if (maxStep <= 0n) maxStep = 1n;
+
+  if (absDiff <= maxStep) return target;
+  return diff > 0n ? current + maxStep : current - maxStep;
 }
 
-function deriveNewWeights(_prices: RawSignals, prev: Weights): Weights {
-  // Keep your existing logic here.
-  // As a safe default, keep weights stable.
-  return { ...prev };
-}
+async function publishToOracle(oracle: OracleContract, indexUsdPerG: number) {
+  const targetUsdPerOz = indexUsdPerG * OUNCE_TO_GRAM;
+  const targetE6 = BigInt(Math.round(targetUsdPerOz * 1_000_000));
 
-async function publishToOracle(oracle: any, indexUsdPerG: number) {
-  const indexUsdPerOz = indexUsdPerG * OUNCE_TO_GRAM;
-  const pricePerOzE6 = BigInt(Math.round(indexUsdPerOz * 1_000_000));
+  const currentE6 = await oracle.getPricePerOzE6();
+  const nextE6 = stepLimitedE6(currentE6, targetE6, ORACLE_MAX_STEP_BPS);
 
   console.log(
-    `🧾 Publishing index price: ${indexUsdPerG} USD/g -> ${indexUsdPerOz} USD/oz`
+    `🧾 Oracle publish | current=${currentE6} target=${targetE6} next=${nextE6} step=${ORACLE_MAX_STEP_BPS}bps`
   );
 
-  const tx = await oracle.setPricePerOzE6(pricePerOzE6);
+  const tx = await oracle.setPricePerOzE6(nextE6);
   await tx.wait();
 }
 
+/* ═══════════════════════════════════════════════
+   MAIN LOOP
+═══════════════════════════════════════════════ */
+async function run() {
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-async function runTick(oracle: OracleContract) {
-  try {
-    const raw = await fetchRawSignals();
+  const oracle = new ethers.Contract(
+    ORACLE_ADDRESS,
+    [
+      "function setPricePerOzE6(uint256 newPricePerOzE6) external",
+      "function getPricePerOzE6() external view returns (uint256)",
+    ],
+    wallet
+  ) as OracleContract;
 
-    const newWeights = deriveNewWeights(raw, currentWeights);
-    currentWeights = smoothWeights(currentWeights, newWeights);
+  console.log("✅ Watcher initialized successfully!");
+  console.log("   Starting price update loop...");
+  console.log("══════════════════════════════════════════════════");
 
-    const index = computeIndexPrice(raw, currentWeights);
-
-    console.log("⚖️ Current weights:", currentWeights);
-    console.log(`📈 Computed index: ${index} USD/g`);
-
-    if (!shouldPublishNowUTC()) {
-      console.log("🕰️ Discovery phase: Not publishing at this hour.");
-      return;
-    }
-
-    await publishToOracle(oracle, index);
-  } catch (e: any) {
-    console.error("❌ Tick failed:", e?.message || e);
-    throw e;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// STARTUP
-// ═══════════════════════════════════════════════════════════════
-
-async function startPreprocessor() {
-  if (!CONFIG.rpcUrl || !CONFIG.oracleAddress || !CONFIG.privateKey || !CONFIG.goldApiKey) {
-    console.error("❌ Missing env vars. Need RPC_URL, ORACLE_ADDRESS, PRIVATE_KEY, GOLDAPI_KEY");
-    process.exit(1);
-  }
-
-  const provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl);
-  const wallet = new ethers.Wallet(CONFIG.privateKey, provider);
-
-  const oracleAbi = [
-  "function setPricePerOzE6(uint256 newPricePerOzE6) external",
-  "function getPricePerOzE6() external view returns (uint256)",
-];
-
-  const oracle = new ethers.Contract(CONFIG.oracleAddress, oracleAbi, wallet) as unknown as OracleContract;
-
-  console.log("\n✅ Watcher initialized successfully!");
-  console.log("   Starting price update loop...\n");
-
-  // Run initial tick
-  await runTick(oracle);
-
-  // Schedule periodic updates (non-overlapping loop)
-  let isTickRunning = false;
-  setInterval(async () => {
-    if (isTickRunning) {
-      console.log("⏳ Previous tick still running — skipping this interval.");
-      return;
-    }
-    isTickRunning = true;
+  while (true) {
     try {
-      await runTick(oracle);
-    } catch {
-      // runTick already logs
-    } finally {
-      isTickRunning = false;
+      console.log(`⏰ Tick at ${new Date().toISOString()}`);
+      const raw = await fetchRawSignals();
+      const index = computeIndexPrice(raw, CURRENT_WEIGHTS);
+
+      console.log(`📈 Computed index: ${index} USD/g`);
+      await publishToOracle(oracle, index);
+    } catch (err: any) {
+      console.error("❌ Tick failed:", err.message || err);
     }
-  }, CONFIG.updateInterval);
+
+    await new Promise(r => setTimeout(r, WATCHER_INTERVAL));
+  }
 }
 
-// Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("\n\n👋 Shutting down watcher...");
-  console.log("   Final weights:", currentWeights);
-  process.exit(0);
-});
-
-process.on("SIGTERM", () => {
-  console.log("\n\n👋 Shutting down watcher...");
-  process.exit(0);
-});
-
-// Run
-startPreprocessor().catch((error) => {
-  console.error("❌ Startup failed:", error);
+run().catch(err => {
+  console.error("❌ Startup failed:", err);
   process.exit(1);
 });
