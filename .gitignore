@@ -8,8 +8,8 @@ build
 artifacts
 cache
 typechain-types
-coverage
-coverage.json
+/coverage
+/coverage.json
 
 # Project archives (do not commit)
 *.zip

@@ -1,0 +1,64 @@
+'npx hardhat clean' running (wd: /Users/bs/Desktop/auxidien-project)
+'npx hardhat clean --global' running (wd: /Users/bs/Desktop/auxidien-project)
+'npx hardhat compile --force' running (wd: /Users/bs/Desktop/auxidien-project)
+INFO:Detectors:
+Detector: incorrect-equality
+AuxidienOracle.isStale(uint256) (contracts/AuxidienOracle.sol#325-328) uses a dangerous strict equality:
+	- lastUpdateAt == 0 (contracts/AuxidienOracle.sol#326)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
+INFO:Detectors:
+Detector: timestamp
+AuxiVesting.vestedAmount(uint256) (contracts/AuxiVesting.sol#161-185) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(scheduleId < schedules.length,Vesting: invalid schedule) (contracts/AuxiVesting.sol#162)
+	- currentTime < s.cliff (contracts/AuxiVesting.sol#171)
+	- currentTime >= s.end (contracts/AuxiVesting.sol#174)
+AuxiVesting.releasableAmount(uint256) (contracts/AuxiVesting.sol#191-195) uses timestamp for comparisons
+	Dangerous comparisons:
+	- vested > released (contracts/AuxiVesting.sol#194)
+AuxiVesting.release(uint256) (contracts/AuxiVesting.sol#201-218) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(scheduleId < schedules.length,Vesting: invalid schedule) (contracts/AuxiVesting.sol#202)
+	- require(bool,string)(! s.revoked,Vesting: schedule revoked) (contracts/AuxiVesting.sol#205)
+	- require(bool,string)(msg.sender == s.beneficiary || msg.sender == owner(),Vesting: not authorized) (contracts/AuxiVesting.sol#206-209)
+	- require(bool,string)(releasable > 0,Vesting: nothing to release) (contracts/AuxiVesting.sol#212)
+AuxiVesting.releaseAll(address) (contracts/AuxiVesting.sol#224-241) uses timestamp for comparisons
+	Dangerous comparisons:
+	- releasable > 0 (contracts/AuxiVesting.sol#235)
+AuxiVesting.revoke(uint256) (contracts/AuxiVesting.sol#248-275) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(scheduleId < schedules.length,Vesting: invalid schedule) (contracts/AuxiVesting.sol#249)
+	- require(bool,string)(s.revocable,Vesting: not revocable) (contracts/AuxiVesting.sol#252)
+	- require(bool,string)(! s.revoked,Vesting: already revoked) (contracts/AuxiVesting.sol#253)
+	- unreleased > 0 (contracts/AuxiVesting.sol#259)
+	- remaining > 0 (contracts/AuxiVesting.sol#269)
+AuxiVesting.changeBeneficiary(uint256,address) (contracts/AuxiVesting.sol#282-311) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(scheduleId < schedules.length,Vesting: invalid schedule) (contracts/AuxiVesting.sol#286)
+	- require(bool,string)(msg.sender == s.beneficiary || msg.sender == owner(),Vesting: not authorized) (contracts/AuxiVesting.sol#290-293)
+	- require(bool,string)(! s.revoked,Vesting: schedule revoked) (contracts/AuxiVesting.sol#294)
+AuxiVesting.isFunded() (contracts/AuxiVesting.sol#330-332) uses timestamp for comparisons
+	Dangerous comparisons:
+	- token.balanceOf(address(this)) >= totalCommitted (contracts/AuxiVesting.sol#331)
+AuxiVesting.getVestingInfo(uint256) (contracts/AuxiVesting.sol#338-365) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(scheduleId < schedules.length,Vesting: invalid schedule) (contracts/AuxiVesting.sol#350)
+AuxidienOracle.setPricePerOzE6(uint256) (contracts/AuxidienOracle.sol#197-221) uses timestamp for comparisons
+	Dangerous comparisons:
+	- lastUpdateAt != 0 && minUpdateInterval > 0 (contracts/AuxidienOracle.sol#201)
+	- require(bool,string)(block.timestamp >= lastUpdateAt + minUpdateInterval,Oracle: update too soon) (contracts/AuxidienOracle.sol#202-205)
+AuxidienOracle.setPriceWithMetals(uint256,uint256,uint256,uint256,uint256) (contracts/AuxidienOracle.sol#231-275) uses timestamp for comparisons
+	Dangerous comparisons:
+	- lastUpdateAt != 0 && minUpdateInterval > 0 (contracts/AuxidienOracle.sol#241)
+	- require(bool,string)(block.timestamp >= lastUpdateAt + minUpdateInterval,Oracle: update too soon) (contracts/AuxidienOracle.sol#242-245)
+AuxidienOracle.isStale(uint256) (contracts/AuxidienOracle.sol#325-328) uses timestamp for comparisons
+	Dangerous comparisons:
+	- lastUpdateAt == 0 (contracts/AuxidienOracle.sol#326)
+	- block.timestamp > lastUpdateAt + maxAge (contracts/AuxidienOracle.sol#327)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+INFO:Detectors:
+Detector: costly-loop
+AuxiVesting.constructor(address,address,address[],uint256[],bool[]) (contracts/AuxiVesting.sol#86-139) has costly operations inside a loop:
+	- totalCommitted += amounts[i] (contracts/AuxiVesting.sol#127)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#costly-operations-inside-a-loop
+INFO:Slither:. analyzed (18 contracts with 101 detectors), 13 result(s) found
