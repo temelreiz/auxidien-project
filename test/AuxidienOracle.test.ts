@@ -108,7 +108,7 @@ describe("AuxidienOracle", () => {
       expect(await oracle.getPricePerOzE6()).to.equal(e6(2400));
     });
 
-    it("enforces maxPriceChangeRate after the first update", async () => {
+    it("enforces maxPriceChangeRate after the first update (upward delta)", async () => {
       const { oracle, watcher } = await loadFixture(deployFixture);
       await oracle.connect(watcher).setPricePerOzE6(e6(2000));
       await time.increase(MIN_UPDATE_INTERVAL + 1);
@@ -119,6 +119,19 @@ describe("AuxidienOracle", () => {
       // but exactly 2200 (10%) is accepted
       await oracle.connect(watcher).setPricePerOzE6(e6(2200));
       expect(await oracle.getPricePerOzE6()).to.equal(e6(2200));
+    });
+
+    it("enforces maxPriceChangeRate after the first update (downward delta)", async () => {
+      const { oracle, watcher } = await loadFixture(deployFixture);
+      await oracle.connect(watcher).setPricePerOzE6(e6(2000));
+      await time.increase(MIN_UPDATE_INTERVAL + 1);
+      // 10% cap → max delta is 200, so 1700 is rejected
+      await expect(
+        oracle.connect(watcher).setPricePerOzE6(e6(1700)),
+      ).to.be.revertedWith("Oracle: price change too large");
+      // but 1800 (10% drop) is accepted
+      await oracle.connect(watcher).setPricePerOzE6(e6(1800));
+      expect(await oracle.getPricePerOzE6()).to.equal(e6(1800));
     });
 
     it("admin can tighten or relax maxPriceChangeRate", async () => {
@@ -176,6 +189,28 @@ describe("AuxidienOracle", () => {
           .setPriceWithMetals(e6(2300), e6(2350), 0, 0, 0),
       ).to.be.revertedWith("Oracle: price change too large");
     });
+
+    it("rejects callers without ORACLE_ROLE", async () => {
+      const { oracle, stranger } = await loadFixture(deployFixture);
+      await expect(
+        oracle.connect(stranger).setPriceWithMetals(e6(2350), 0, 0, 0, 0),
+      ).to.be.revertedWithCustomError(oracle, "AccessControlUnauthorizedAccount");
+    });
+
+    it("rejects zero composite price", async () => {
+      const { oracle, watcher } = await loadFixture(deployFixture);
+      await expect(
+        oracle.connect(watcher).setPriceWithMetals(0, 0, 0, 0, 0),
+      ).to.be.revertedWith("Oracle: price must be > 0");
+    });
+
+    it("enforces minUpdateInterval after a setPriceWithMetals update", async () => {
+      const { oracle, watcher } = await loadFixture(deployFixture);
+      await oracle.connect(watcher).setPriceWithMetals(e6(2350), 0, 0, 0, 0);
+      await expect(
+        oracle.connect(watcher).setPriceWithMetals(e6(2355), 0, 0, 0, 0),
+      ).to.be.revertedWith("Oracle: update too soon");
+    });
   });
 
   describe("isStale and getPriceData", () => {
@@ -199,6 +234,60 @@ describe("AuxidienOracle", () => {
       expect(data.price).to.equal(e6(2350));
       expect(data.decimals).to.equal(6);
       expect(data.updatedAt).to.equal(await oracle.lastUpdateAt());
+    });
+  });
+
+  describe("weights", () => {
+    it("initialises with the documented default weights", async () => {
+      const { oracle } = await loadFixture(deployFixture);
+      const w = await oracle.getWeights();
+      expect(w.goldBps).to.equal(5500);
+      expect(w.silverBps).to.equal(2000);
+      expect(w.platinumBps).to.equal(1700);
+      expect(w.palladiumBps).to.equal(800);
+    });
+
+    it("emits WeightsChanged in the constructor", async () => {
+      const Oracle = await ethers.getContractFactory("AuxidienOracle");
+      const [admin] = await ethers.getSigners();
+      const tx = await Oracle.deploy(admin.address, MIN_UPDATE_INTERVAL);
+      await expect(tx.deploymentTransaction())
+        .to.emit(tx, "WeightsChanged")
+        .withArgs(5500, 2000, 1700, 800);
+    });
+
+    it("admin can change weights when they sum to 10000", async () => {
+      const { oracle, admin } = await loadFixture(deployFixture);
+      await expect(oracle.connect(admin).setWeights(6000, 1800, 1500, 700))
+        .to.emit(oracle, "WeightsChanged")
+        .withArgs(6000, 1800, 1500, 700);
+      const w = await oracle.getWeights();
+      expect(w.goldBps).to.equal(6000);
+      expect(w.silverBps).to.equal(1800);
+      expect(w.platinumBps).to.equal(1500);
+      expect(w.palladiumBps).to.equal(700);
+    });
+
+    it("rejects weights that do not sum to 10000", async () => {
+      const { oracle, admin } = await loadFixture(deployFixture);
+      await expect(
+        oracle.connect(admin).setWeights(5000, 2000, 1700, 800),
+      ).to.be.revertedWith("Oracle: weights must sum to 10000");
+      await expect(
+        oracle.connect(admin).setWeights(5500, 2000, 1700, 801),
+      ).to.be.revertedWith("Oracle: weights must sum to 10000");
+    });
+
+    it("rejects non-admin callers", async () => {
+      const { oracle, stranger } = await loadFixture(deployFixture);
+      await expect(
+        oracle.connect(stranger).setWeights(5500, 2000, 1700, 800),
+      ).to.be.revertedWithCustomError(oracle, "AccessControlUnauthorizedAccount");
+    });
+
+    it("exposes WEIGHT_DENOMINATOR as 10000", async () => {
+      const { oracle } = await loadFixture(deployFixture);
+      expect(await oracle.WEIGHT_DENOMINATOR()).to.equal(10_000);
     });
   });
 

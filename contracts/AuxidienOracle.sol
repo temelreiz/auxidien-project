@@ -45,6 +45,23 @@ contract AuxidienOracle is AccessControl {
     /// @notice Last recorded individual metal prices
     MetalPrices public lastMetalPrices;
 
+    /// @notice Index constituent weights in basis points (sum must equal 10000)
+    /// @dev    Source of truth for the off-chain watcher. Updates are governed
+    ///         by ADMIN_ROLE (multisig) and emit `WeightsChanged` so the change
+    ///         is fully auditable on-chain.
+    struct Weights {
+        uint16 goldBps;
+        uint16 silverBps;
+        uint16 platinumBps;
+        uint16 palladiumBps;
+    }
+
+    /// @notice Current index weights
+    Weights public weights;
+
+    /// @notice Total of all weight basis points (always 10000 == 100%)
+    uint16 public constant WEIGHT_DENOMINATOR = 10_000;
+
     /// @notice Emitted when the index price is updated
     event PriceUpdated(
         uint256 pricePerOzE6,
@@ -67,6 +84,14 @@ contract AuxidienOracle is AccessControl {
     /// @notice Emitted when max price change rate changes
     event MaxPriceChangeRateChanged(uint256 oldRate, uint256 newRate);
 
+    /// @notice Emitted when the index weights change
+    event WeightsChanged(
+        uint16 goldBps,
+        uint16 silverBps,
+        uint16 platinumBps,
+        uint16 palladiumBps
+    );
+
     /**
      * @notice Initialize the oracle with admin and minimum update interval
      * @param admin Address with admin privileges (should be multisig)
@@ -74,12 +99,57 @@ contract AuxidienOracle is AccessControl {
      */
     constructor(address admin, uint256 _minUpdateInterval) {
         require(admin != address(0), "Oracle: admin is zero address");
-        
+
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
-        
+
         minUpdateInterval = _minUpdateInterval;
         maxPriceChangeRate = 1000; // 10% default max change
+
+        // Initial weights documented in INDEX_METHODOLOGY.md. The committee
+        // may update them at any time via `setWeights`.
+        weights = Weights({
+            goldBps: 5500,
+            silverBps: 2000,
+            platinumBps: 1700,
+            palladiumBps: 800
+        });
+        emit WeightsChanged(5500, 2000, 1700, 800);
+    }
+
+    /**
+     * @notice Update the index weights. Sum must equal WEIGHT_DENOMINATOR (10000).
+     * @dev    The off-chain watcher reads these to compute the composite price.
+     */
+    function setWeights(
+        uint16 goldBps,
+        uint16 silverBps,
+        uint16 platinumBps,
+        uint16 palladiumBps
+    ) external onlyRole(ADMIN_ROLE) {
+        require(
+            uint256(goldBps) + silverBps + platinumBps + palladiumBps == WEIGHT_DENOMINATOR,
+            "Oracle: weights must sum to 10000"
+        );
+        weights = Weights({
+            goldBps: goldBps,
+            silverBps: silverBps,
+            platinumBps: platinumBps,
+            palladiumBps: palladiumBps
+        });
+        emit WeightsChanged(goldBps, silverBps, platinumBps, palladiumBps);
+    }
+
+    /**
+     * @notice Get all four weights in one call (convenient for the watcher).
+     */
+    function getWeights() external view returns (
+        uint16 goldBps,
+        uint16 silverBps,
+        uint16 platinumBps,
+        uint16 palladiumBps
+    ) {
+        return (weights.goldBps, weights.silverBps, weights.platinumBps, weights.palladiumBps);
     }
 
     /**

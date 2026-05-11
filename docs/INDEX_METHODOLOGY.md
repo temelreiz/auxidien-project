@@ -1,7 +1,7 @@
 # AUXIDIEN INDEX METHODOLOGY
 
-**Document Version**: 1.0  
-**Effective Date**: January 2026  
+**Document Version**: 1.1
+**Effective Date**: May 2026
 **Index Administrator**: Auxidien Foundation
 
 ---
@@ -10,17 +10,17 @@
 
 ### 1.1 Description
 
-The Auxidien Index (AUXI) is a real-time, volume-weighted precious metals price index. It represents a composite measure of the four most actively traded precious metals in global spot markets.
+The Auxidien Index (AUXI) is a precious metals price index. It represents a composite of the four most actively traded precious metals in global spot markets, combined into a single USD/oz figure that is published on-chain.
 
 ### 1.2 Index Objective
 
-To provide a single, transparent metric that reflects the aggregate price movement of precious metals, weighted by their relative trading activity in the spot market.
+To provide a single, transparent metric that reflects the aggregate USD price movement of precious metals, using committee-governed weights that approximate the relative economic significance of each metal.
 
 ### 1.3 Index Type
 
 - **Category**: Commodity Index
-- **Weighting Method**: Volume-weighted
-- **Calculation Frequency**: Real-time (5-minute intervals)
+- **Weighting Method**: Curated reference weights, stored on-chain and governed by the Index Committee (`ADMIN_ROLE` on the oracle multisig)
+- **Calculation Frequency**: Hourly publish cadence (configurable; minimum interval and per-tick cap enforced on-chain)
 - **Base Currency**: USD
 
 ---
@@ -29,28 +29,24 @@ To provide a single, transparent metric that reflects the aggregate price moveme
 
 ### 2.1 Constituent Metals
 
-| Metal | Symbol | Weight Factor |
-|-------|--------|---------------|
-| Gold | XAUUSD | Dynamic (volume-based) |
-| Silver | XAGUSD | Dynamic (volume-based) |
-| Platinum | XPTUSD | Dynamic (volume-based) |
-| Palladium | XPDUSD | Dynamic (volume-based) |
+| Metal | Symbol | Initial Weight (bps) |
+|-------|--------|----------------------|
+| Gold | XAUUSD | 5500 (55.00%) |
+| Silver | XAGUSD | 2000 (20.00%) |
+| Platinum | XPTUSD | 1700 (17.00%) |
+| Palladium | XPDUSD |  800 (8.00%) |
+
+Weights sum to exactly 10000 bps (100%) and are stored on the `AuxidienOracle` contract. They may only be changed by `ADMIN_ROLE` (multisig) and every change emits a `WeightsChanged` event. The off-chain watcher reads `getWeights()` before each publish, so once a weights change lands on-chain the next composite reflects it without a code release.
 
 ### 2.2 Data Sources
 
-**Primary Sources**:
-- London Bullion Market Association (LBMA)
-- CME Group Spot Prices
-- Major Forex ECN Providers
+**Current primary source**: [GoldAPI](https://www.goldapi.io) (XAU/XAG/XPT/XPD spot USD/oz quotes).
 
-**Composite Volume Weighting**:
+**Source policy**:
 
-| Source | Weight in Composite |
-|--------|---------------------|
-| LBMA Reference | 40% |
-| CME Spot | 30% |
-| Forex Metal Providers | 20% |
-| OTC Market | 10% |
+- The watcher caches the most recent successful quote per metal. If a single metal request fails, the cached value is used and the failure is logged.
+- An off-chain `ORACLE_MAX_STEP_BPS` (default 3%) clamps how far the composite price can move per tick, regardless of input. The on-chain `maxPriceChangeRate` (default 10%) is an additional, contract-enforced ceiling.
+- Additional independent feeds (LBMA reference, CME spot, alternative aggregators) are on the integration roadmap; once added they will be combined into a single composite quote per metal via the committee-approved methodology and this section will be revised.
 
 ---
 
@@ -58,55 +54,55 @@ To provide a single, transparent metric that reflects the aggregate price moveme
 
 ### 3.1 Index Formula
 
-The AUXI index value is calculated using the following formula:
+The AUXI index value is calculated using the following formula, in basis points:
 
 ```
-AUXI = Σ(w_i × P_i)
+AUXI = Σ(w_i × P_i) / 10000
 
 Where:
-  w_i = Weight of metal i
+  w_i = Weight of metal i, in basis points (sum = 10000)
   P_i = Spot price of metal i (USD/oz)
 ```
 
-### 3.2 Weight Calculation
+### 3.2 Weight Determination
 
-Weights are derived from notional trading volume:
+Weights are governance parameters, not market-derived statistics. The Index Committee sets the initial values published in Section 2.1 and may revise them through the on-chain `setWeights(uint16,uint16,uint16,uint16)` admin call. The contract validates that the four basis-point values sum to exactly `WEIGHT_DENOMINATOR = 10000` and emits `WeightsChanged` on every successful update.
 
-```
-w_i = N_i / Σ(N_j)
+The committee considers, among other factors:
 
-Where:
-  N_i = Notional USD volume of metal i
-  N_i = V_i × P_i
-  V_i = Trading volume of metal i
-```
+- Long-term relative spot market depth and turnover (institutional and OTC)
+- Industrial vs. monetary demand drivers
+- Liquidity available for each metal on regulated venues
+- Concentration risk in any single constituent
+
+Weight changes are reviewed on the schedule defined in Section 4.2.
 
 ### 3.3 Calculation Example
 
-**Input Data (Sample)**:
+**Initial committee-set weights (Section 2.1)**:
 
-| Metal | Price (USD/oz) | Volume | Notional USD |
-|-------|----------------|--------|--------------|
-| Gold | 2,350.00 | 1,500,000 | 3,525,000,000 |
-| Silver | 27.85 | 800,000 | 22,280,000 |
-| Platinum | 985.25 | 200,000 | 197,050,000 |
-| Palladium | 1,050.00 | 100,000 | 105,000,000 |
-| **Total** | - | - | **3,849,330,000** |
+| Metal | Weight (bps) |
+|-------|--------------|
+| Gold | 5500 |
+| Silver | 2000 |
+| Platinum | 1700 |
+| Palladium | 800 |
 
-**Weight Calculation**:
+**Sample spot prices**:
 
-| Metal | Notional | Weight |
-|-------|----------|--------|
-| Gold | 3,525,000,000 | 91.57% |
-| Silver | 22,280,000 | 0.58% |
-| Platinum | 197,050,000 | 5.12% |
-| Palladium | 105,000,000 | 2.73% |
+| Metal | Price (USD/oz) |
+|-------|----------------|
+| Gold | 2,350.00 |
+| Silver | 27.85 |
+| Platinum | 985.25 |
+| Palladium | 1,050.00 |
 
-**Index Value**:
+**Index value**:
 ```
-AUXI = (0.9157 × 2350) + (0.0058 × 27.85) + (0.0512 × 985.25) + (0.0273 × 1050)
-AUXI = 2151.90 + 0.16 + 50.44 + 28.67
-AUXI = 2231.17 USD/oz
+AUXI = (5500·2350 + 2000·27.85 + 1700·985.25 + 800·1050) / 10000
+     = (12,925,000 + 55,700 + 1,674,925 + 840,000) / 10000
+     = 15,495,625 / 10000
+     = 1,549.56 USD/oz
 ```
 
 ---
@@ -161,9 +157,13 @@ The Auxidien Index Committee oversees:
 ### 6.1 Oracle Contract
 
 - **Network**: BNB Smart Chain
-- **Price Format**: USD × 10^6 (6 decimals)
-- **Update Frequency**: Every 5 minutes
-- **Access Control**: Role-based (ORACLE_ROLE)
+- **Price Format**: USD/oz × 10^6 (6 decimals)
+- **Publish cadence**: Hourly by default; configurable via the watcher process. The contract enforces a `minUpdateInterval` floor.
+- **Access Control**: Role-based via OpenZeppelin AccessControl
+  - `ORACLE_ROLE` — the watcher signer; only role allowed to call `setPricePerOzE6` and `setPriceWithMetals`
+  - `ADMIN_ROLE` — the multisig; can update weights, intervals, the max change rate, and grant/revoke `ORACLE_ROLE`
+- **On-chain weights**: `weights` struct (gold/silver/platinum/palladium basis points). Read via `getWeights()`, mutated via `setWeights(...)` (admin only).
+- **Transparency call**: `setPriceWithMetals(composite, gold, silver, platinum, palladium)` records all four constituent prices alongside the composite in a single event-emitting transaction.
 
 ### 6.2 Price Format Example
 
@@ -174,10 +174,10 @@ On-chain value: 2,231,170,000 (uint256)
 
 ### 6.3 Security Measures
 
-- Maximum price change per update: 10%
-- Minimum update interval: 5 minutes
-- Multi-signature oracle management
-- Emergency pause functionality
+- **Per-update price ceiling**: `maxPriceChangeRate` is enforced on-chain; the constructor defaults it to 10% (1000 bps). The watcher applies an additional, tighter off-chain cap (`ORACLE_MAX_STEP_BPS`, default 3%) before submitting transactions.
+- **Minimum update interval**: enforced on-chain by `minUpdateInterval`. Configurable by admin.
+- **Role separation**: the watcher key holds only `ORACLE_ROLE`; ownership, weight changes, and threshold tuning require the admin multisig.
+- **Auditable history**: `PriceUpdated`, `MetalPricesRecorded`, `WeightsChanged`, `MinUpdateIntervalChanged`, and `MaxPriceChangeRateChanged` events provide a full timeline.
 
 ---
 
@@ -187,10 +187,9 @@ On-chain value: 2,231,170,000 (uint256)
 
 | Channel | Update Frequency |
 |---------|------------------|
-| On-chain Oracle | 5 minutes |
-| API Endpoint | Real-time |
-| Website Dashboard | Real-time |
-| TradingView | 1 minute |
+| On-chain Oracle (BSC) | Hourly (configurable) |
+| Website Dashboard | Reads the on-chain price; updates on every confirmed publish |
+| Admin Dashboard | Reads the on-chain price, weights, and history |
 
 ### 7.2 Data Access
 
@@ -211,6 +210,7 @@ On-chain value: 2,231,170,000 (uint256)
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | Jan 2026 | Initial publication |
+| 1.1 | May 2026 | Replaced the "dynamic volume-weighted, four-source composite" framing with the actual committee-governed weight model. Documented on-chain `weights`, `setWeights`, and `WeightsChanged`. Stated the current single primary data source (GoldAPI) and the roadmap toward additional feeds. Corrected the calculation example to reflect the on-chain bps formula. Updated publish cadence to hourly. |
 
 ---
 
